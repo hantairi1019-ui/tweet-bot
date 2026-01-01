@@ -444,6 +444,8 @@ function runSchedule(userName: string | null = null) {
 
 // Chatwork通知ヘルパー
 async function handleChatworkNotification(config: any, logger: Logger) {
+  logger.log(`DEBUG: Chatwork Config Check: ${JSON.stringify(config.chatwork)}`);
+
   if (config.chatwork && config.chatwork.apiToken && config.chatwork.roomId) {
     logger.log('Chatworkへログを送信します...');
     const client = new ChatworkClient(config.chatwork.apiToken, config.chatwork.roomId);
