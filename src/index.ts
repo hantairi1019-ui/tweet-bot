@@ -248,7 +248,7 @@ async function runLike(headless = false, userName: string | null = null) {
       logger.log(`Searching for keyword (Like): ${keyword}`);
 
       await page.goto(`https://x.com/search?q=${encodeURIComponent(keyword)}&src=typed_query&f=live`);
-      await page.waitForTimeout(5000);
+      await page.waitForTimeout(8000);
       await page.screenshot({ path: `debug_like_search_${keyword}.png` });
 
       const tweets = page.locator('article[data-testid="tweet"]');
@@ -327,7 +327,7 @@ async function runFollow(headless = false, userName: string | null = null) {
       logger.log(`Searching for keyword (Follow): ${keyword}`);
 
       await page.goto(`https://x.com/search?q=${encodeURIComponent(keyword)}&src=typed_query&f=user`);
-      await page.waitForTimeout(5000);
+      await page.waitForTimeout(8000);
       await page.screenshot({ path: `debug_follow_search_${keyword}.png` });
 
       const users = page.locator('div[data-testid="cellInnerDiv"]');
