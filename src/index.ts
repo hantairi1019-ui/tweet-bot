@@ -2,6 +2,8 @@ const { chromium } = require('playwright');
 const fs = require('fs');
 const path = require('path');
 const cron = require('node-cron');
+import { Logger } from './logger';
+import { ChatworkClient } from './chatwork';
 
 /**
  * X (Twitter) 自動投稿ツール (JSON設定・連続投稿対応版)
@@ -142,28 +144,42 @@ async function postTweet(text: any, mediaPath: any = null, headless = false, use
 }
 
 async function runBatch(keys: any, headless = false, userName: string | null = null) {
+  const logger = new Logger(userName, 'post');
+  logger.log(`Starting runBatch with keys: ${keys.join(', ')}`);
+
   const config = loadConfig(userName);
   const waitTime = 10 * 60 * 1000; // 5分 (ミリ秒)
 
-  for (let i = 0; i < keys.length; i++) {
-    const key = keys[i];
-    const item = config.patterns[key];
+  try {
+    for (let i = 0; i < keys.length; i++) {
+      const key = keys[i];
+      const item = config.patterns[key];
 
-    if (!item) {
-      console.error(`パターン "${key}" が設定ファイルに存在しません。スキップします。`);
-      continue;
+      if (!item) {
+        logger.error(`パターン "${key}" が設定ファイルに存在しません。スキップします。`);
+        continue;
+      }
+
+      logger.log(`[${i + 1}/${keys.length}] 投稿開始: ${key}`);
+      // Capture console output of postTweet? It uses console.log.
+      // We can't easily capture it without changing postTweet. 
+      // For now, we log the attempt and result here.
+      const success = await postTweet(item.text, item.media, headless, userName);
+      if (success) logger.log(`投稿成功: ${key}`);
+      else logger.error(`投稿失敗: ${key}`);
+
+      // 最後の投稿以外は待機
+      if (i < keys.length - 1) {
+        logger.log(`次の投稿まで5分間待機します...`);
+        await new Promise(resolve => setTimeout(resolve, waitTime));
+      }
     }
-
-    console.log(`[${i + 1}/${keys.length}] 投稿開始: ${key}`);
-    await postTweet(item.text, item.media, headless, userName);
-
-    // 最後の投稿以外は待機
-    if (i < keys.length - 1) {
-      console.log(`次の投稿まで5分間待機します...`);
-      await new Promise(resolve => setTimeout(resolve, waitTime));
-    }
+    logger.log('すべてのバッチ投稿が完了しました。');
+  } catch (e) {
+    logger.error('Error in runBatch', e);
+  } finally {
+    await handleChatworkNotification(config, logger);
   }
-  console.log('すべてのバッチ投稿が完了しました。');
 }
 
 // ブラウザ起動ヘルパー
@@ -197,9 +213,13 @@ async function launchBrowser(headless = false) {
 }
 
 async function runLike(headless = false, userName: string | null = null) {
+  const logger = new Logger(userName, 'like');
+  logger.log('Starting runLike');
+
   const config = loadConfig(userName);
   if (!config.actions || !config.actions.targetKeywords) {
-    console.error('config.jsonにactions設定がありません。');
+    logger.error('config.jsonにactions設定がありません。');
+    await handleChatworkNotification(config, logger);
     return;
   }
 
@@ -208,8 +228,9 @@ async function runLike(headless = false, userName: string | null = null) {
 
   const { sessionPath } = getPaths(userName);
   if (!fs.existsSync(sessionPath)) {
-    console.error(`セッションファイルがありません: ${sessionPath}`);
-    console.error('loginを実行してください。');
+    logger.error(`セッションファイルがありません: ${sessionPath}`);
+    logger.error('loginを実行してください。');
+    await handleChatworkNotification(config, logger);
     return;
   }
 
@@ -224,7 +245,7 @@ async function runLike(headless = false, userName: string | null = null) {
     let count = 0;
     for (const keyword of keywords) {
       if (count >= limit) break;
-      console.log(`Searching for keyword (Like): ${keyword}`);
+      logger.log(`Searching for keyword (Like): ${keyword}`);
 
       await page.goto(`https://x.com/search?q=${encodeURIComponent(keyword)}&src=typed_query&f=live`);
       await page.waitForTimeout(5000);
@@ -232,7 +253,7 @@ async function runLike(headless = false, userName: string | null = null) {
 
       const tweets = page.locator('article[data-testid="tweet"]');
       const tweetCount = await tweets.count();
-      console.log(`  -> Found ${tweetCount} tweets`);
+      logger.log(`  -> Found ${tweetCount} tweets`);
 
       for (let i = 0; i < tweetCount; i++) {
         if (count >= limit) break;
@@ -243,7 +264,7 @@ async function runLike(headless = false, userName: string | null = null) {
         // すでにいいね済みか確認 (data-testid="unlike" なら済み)
         const unlikeButton = tweet.locator('[data-testid="unlike"]');
         if (await unlikeButton.count() > 0) {
-          console.log('  -> すでにいいね済みです。スキップ');
+          logger.log('  -> すでにいいね済みです。スキップ');
           continue;
         }
 
@@ -251,28 +272,33 @@ async function runLike(headless = false, userName: string | null = null) {
         const likeButton = tweet.locator('[data-testid="like"]');
         if (await likeButton.count() > 0) {
           await likeButton.first().click();
-          console.log(`  -> いいねしました (${count + 1}/${limit})`);
+          logger.log(`  -> いいねしました (${count + 1}/${limit})`);
           count++;
           const wait = Math.floor(Math.random() * 5000) + 5000;
-          console.log(`     Waiting ${wait / 1000}s...`);
+          logger.log(`     Waiting ${wait / 1000}s...`);
           await page.waitForTimeout(wait);
         } else {
-          console.log('  -> いいねボタンが見つかりませんでした (data-testid="like")');
+          logger.log('  -> いいねボタンが見つかりませんでした (data-testid="like")');
         }
       }
     }
-    console.log('自動いいね完了しました。');
+    logger.log('自動いいね完了しました。');
   } catch (e) {
-    console.error('Error in runLike:', e);
+    logger.error('Error in runLike:', e);
   } finally {
     await browser.close();
+    await handleChatworkNotification(config, logger);
   }
 }
 
 async function runFollow(headless = false, userName: string | null = null) {
+  const logger = new Logger(userName, 'follow');
+  logger.log('Starting runFollow');
+
   const config = loadConfig(userName);
   if (!config.actions || !config.actions.targetKeywords) {
-    console.error('config.jsonにactions設定がありません。');
+    logger.error('config.jsonにactions設定がありません。');
+    await handleChatworkNotification(config, logger);
     return;
   }
 
@@ -281,8 +307,9 @@ async function runFollow(headless = false, userName: string | null = null) {
 
   const { sessionPath } = getPaths(userName);
   if (!fs.existsSync(sessionPath)) {
-    console.error(`セッションファイルがありません: ${sessionPath}`);
-    console.error('loginを実行してください。');
+    logger.error(`セッションファイルがありません: ${sessionPath}`);
+    logger.error('loginを実行してください。');
+    await handleChatworkNotification(config, logger);
     return;
   }
 
@@ -297,7 +324,7 @@ async function runFollow(headless = false, userName: string | null = null) {
     let count = 0;
     for (const keyword of keywords) {
       if (count >= limit) break;
-      console.log(`Searching for keyword (Follow): ${keyword}`);
+      logger.log(`Searching for keyword (Follow): ${keyword}`);
 
       await page.goto(`https://x.com/search?q=${encodeURIComponent(keyword)}&src=typed_query&f=user`);
       await page.waitForTimeout(5000);
@@ -305,7 +332,7 @@ async function runFollow(headless = false, userName: string | null = null) {
 
       const users = page.locator('div[data-testid="cellInnerDiv"]');
       const userCount = await users.count();
-      console.log(`  -> Found ${userCount} users`);
+      logger.log(`  -> Found ${userCount} users`);
 
       for (let i = 0; i < userCount; i++) {
         if (count >= limit) break;
@@ -326,47 +353,48 @@ async function runFollow(headless = false, userName: string | null = null) {
           // 優先: [data-testid$="-unfollow"]
           const unfollowButton = user.locator('[data-testid$="-unfollow"]');
           if (await unfollowButton.count() > 0) {
-            console.log('  -> すでにフォロー済みです (testid check)。スキップ');
+            logger.log('  -> すでにフォロー済みです (testid check)。スキップ');
             continue;
           }
 
           // 次点: ラベルチェック
           const label = await followButton.first().getAttribute('aria-label');
-          console.log(`    Checking button label: ${label}`);
+          logger.log(`    Checking button label: ${label}`);
 
           if (label && (label.includes('Following') || label.includes('Unfollow') || label.includes('フォロー中') || label.includes('フォロー解除'))) {
-            console.log('  -> すでにフォロー済みです (label check)。スキップ');
+            logger.log('  -> すでにフォロー済みです (label check)。スキップ');
             continue;
           }
 
           try {
             await followButton.first().click();
-            console.log(`  -> フォローしました (${count + 1}/${limit})`);
+            logger.log(`  -> フォローしました (${count + 1}/${limit})`);
             count++;
             const wait = Math.floor(Math.random() * 5000) + 5000;
-            console.log(`     Waiting ${wait / 1000}s...`);
+            logger.log(`     Waiting ${wait / 1000}s...`);
             await page.waitForTimeout(wait);
           } catch (err) {
-            console.error('    Click error:', err);
+            logger.error('    Click error:', err);
           }
         } else {
-          console.log('  -> フォローボタンが見つかりませんでした');
+          logger.log('  -> フォローボタンが見つかりませんでした');
           // デバッグ用: ボタン要素の属性を出力
           const buttons = user.locator('button');
           const btnCount = await buttons.count();
           for (let b = 0; b < btnCount; b++) {
             const aria = await buttons.nth(b).getAttribute('aria-label');
             const testid = await buttons.nth(b).getAttribute('data-testid');
-            console.log(`    [Debug] Button ${b}: aria-label="${aria}", testid="${testid}"`);
+            logger.log(`    [Debug] Button ${b}: aria-label="${aria}", testid="${testid}"`);
           }
         }
       }
     }
-    console.log('自動フォロー完了しました。');
+    logger.log('自動フォロー完了しました。');
   } catch (e) {
-    console.error('Error in runFollow:', e);
+    logger.error('Error in runFollow:', e);
   } finally {
     await browser.close();
+    await handleChatworkNotification(config, logger);
   }
 }
 
@@ -411,6 +439,17 @@ function runSchedule(userName: string | null = null) {
         });
       }
     });
+  }
+}
+
+// Chatwork通知ヘルパー
+async function handleChatworkNotification(config: any, logger: Logger) {
+  if (config.chatwork && config.chatwork.apiToken && config.chatwork.roomId) {
+    logger.log('Chatworkへログを送信します...');
+    const client = new ChatworkClient(config.chatwork.apiToken, config.chatwork.roomId);
+    await client.uploadFile(logger.getLogPath(), '実行ログ');
+  } else {
+    logger.log('Chatwork設定が見つからないため、ログ送信をスキップします。');
   }
 }
 
